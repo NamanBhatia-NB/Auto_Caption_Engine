@@ -17,7 +17,7 @@ The assignment suggested HyperFrames and a hosted transcription API. This implem
 | Layer | Choice | Reason |
 | --- | --- | --- |
 | UI | React + Vite | Small, fast local development server with an editable transcript and live browser preview. |
-| Transcription (default) | FFmpeg's `whisper` filter backed by whisper.cpp | Free/offline after the open `ggml-base.bin` model is downloaded; it produces timed subtitle cues with no API key. |
+| Transcription (default) | FFmpeg's `whisper` filter backed by whisper.cpp | Free/offline after the more accurate open `ggml-small.bin` model is downloaded; it produces timed subtitle cues with no API key. |
 | Optional faster transcription | Groq free tier + Whisper | Supported as an optional mode for machines that do not have a Whisper-enabled FFmpeg build. The key is read from `.env` or passed for the current request only. |
 | Composition/rendering | FFmpeg + libass ASS subtitles | Free, deterministic, supports word timing, styling, outlines, per-word override tags, and MP4 output. |
 
@@ -91,7 +91,7 @@ npm run dev
 
 Open the Vite URL printed in the terminal (normally <http://localhost:3000>).
 
-The first Local Whisper transcription downloads the public `ggml-base.bin` model into `server/models/` (roughly 140 MB). It is cached locally and is not committed. For a different open model, set `WHISPER_MODEL_PATH` in `server/.env` to its GGML file.
+The first Local Whisper transcription downloads the public `ggml-small.bin` model into `server/models/` (roughly 466 MB). It is cached locally and is not committed. For a different open model, set `WHISPER_MODEL_PATH` in `server/.env` to its GGML file.
 
 ## User flow
 
@@ -134,7 +134,7 @@ Jobs are deliberately in memory for this assignment-sized local app; media remai
 - coordinates and font size scale from a 1080×1920 authoring canvas;
 - default `margin_bottom=300` places the caption around the reference's lower third;
 - one ASS event is generated for each active word, so the yellow state tracks timestamps rather than a fixed number of frames;
-- line breaks are based on readable character width (`max_line_chars=18`), not the supplied video's duration or transcript;
+- libass wraps captions against the actual video margins, keeping each cue on one line whenever it fits without clipping at the frame edges;
 - `\fad`, outline, shadow, and the thick translucent `\3c` border create the reference's pop/highlight treatment;
 - all user text is escaped before insertion into ASS.
 

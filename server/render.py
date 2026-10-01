@@ -20,19 +20,19 @@ from typing import Any
 # Values are authored for a 1080 x 1920 vertical video and scaled to the input
 # resolution by generate_eclipse_ass().  They can be overridden by the UI/API.
 ECLIPSE_STYLE: dict[str, Any] = {
-    "font_name": "Arial Black",
-    "font_size": 64,
+    "font_name": "Arial",
+    "font_size": 52,
     "primary_color": "#FFFFFF",
     "highlight_color": "#FFE000",
     "highlight_background": "#FFF0A0",
     "background_alpha": 58,  # ASS alpha: 0 is opaque, 100 is transparent.
     "outline_color": "#111111",
-    "outline_width": 3,
-    "shadow_depth": 3,
+    "outline_width": 2,
+    "shadow_depth": 2,
     "margin_bottom": 300,
     "max_words": 5,
-    "max_line_chars": 18,
-    "uppercase": True,
+    "max_line_chars": 30,
+    "uppercase": False,
 }
 
 
@@ -43,14 +43,17 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
         merged.update({key: value for key, value in style.items() if value is not None})
 
     merged["font_name"] = _safe_font_name(merged["font_name"])
-    merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, 64)
-    merged["outline_width"] = _clamp_int(merged.get("outline_width"), 0, 10, 3)
-    merged["shadow_depth"] = _clamp_int(merged.get("shadow_depth"), 0, 12, 3)
+    merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, 52)
+    merged["outline_width"] = _clamp_int(merged.get("outline_width"), 0, 10, 2)
+    merged["shadow_depth"] = _clamp_int(merged.get("shadow_depth"), 0, 12, 2)
     merged["margin_bottom"] = _clamp_int(merged.get("margin_bottom"), 40, 700, 300)
     merged["max_words"] = _clamp_int(merged.get("max_words"), 2, 8, 5)
-    merged["max_line_chars"] = _clamp_int(merged.get("max_line_chars"), 10, 30, 18)
+    merged["max_line_chars"] = _clamp_int(merged.get("max_line_chars"), 10, 30, 30)
     merged["background_alpha"] = _clamp_int(merged.get("background_alpha"), 0, 100, 58)
-    merged["uppercase"] = bool(merged.get("uppercase", True))
+    uppercase = merged.get("uppercase", False)
+    if isinstance(uppercase, str):
+        uppercase = uppercase.strip().lower() in {"1", "true", "yes", "on"}
+    merged["uppercase"] = bool(uppercase)
 
     for key, fallback in (
         ("primary_color", "#FFFFFF"),
@@ -73,7 +76,7 @@ def generate_eclipse_ass(
     width = max(int(video_width or 1080), 1)
     height = max(int(video_height or 1920), 1)
     scale = width / 1080.0
-    font_size = max(round(s["font_size"] * scale), 24)
+    font_size = max(round(s["font_size"] * scale), 22)
     margin_bottom = max(round(s["margin_bottom"] * height / 1920.0), 30)
 
     primary = _hex_to_ass(s["primary_color"])
@@ -93,7 +96,7 @@ YCbCr Matrix: TV.601
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{s['font_name']},{font_size},{primary},&H000000FF,{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{s['outline_width']},{s['shadow_depth']},2,42,42,{margin_bottom},1
-Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,{highlight_background},&H00000000,-1,0,0,0,100,100,0,0,1,8,0,2,42,42,{margin_bottom},1
+Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,{highlight_background},&H00000000,-1,0,0,0,100,100,0,0,1,5,0,2,42,42,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -117,10 +120,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # characteristic Eclipse left-to-right highlight sweep.
         for index, word in enumerate(words):
             start = max(seg_start, _seconds(word["start"]))
-            if index + 1 < len(words):
-                end = min(seg_end, max(start + 0.03, _seconds(words[index + 1]["start"])))
-            else:
-                end = seg_end
+            # Keep each ASS event aligned to the transcribed word's own end.
+            # Using the next word's start makes the highlight linger through
+            # pauses and can disagree with the browser preview.
+            end = min(seg_end, max(start + 0.03, _seconds(word["end"])))
             if end <= start:
                 continue
 
@@ -218,31 +221,23 @@ def _build_event_text(
     highlight_background: str,
 ) -> str:
     """Render a cue and insert the same readable line breaks for every word."""
-    lines: list[list[str]] = []
-    line: list[str] = []
-    line_length = 0
+    rendered_words: list[str] = []
     for word_index, word in enumerate(words):
         raw = _display_word(str(word.get("word", "")), uppercase)
         value = _ass_escape(raw)
         if not value:
             continue
-        if line and line_length + 1 + len(raw) > max_line_chars:
-            lines.append(line)
-            line = []
-            line_length = 0
         if word_index == active_index:
-            # The thick, translucent border is the Eclipse word background;
-            # the fill stays yellow like the supplied reference video.
+            # Let libass wrap at the actual video margins instead of inserting
+            # a character-count break that can still overflow narrow videos.
+            # The border provides the Eclipse word-shaped highlight.
             value = (
                 "{\\c" + highlight + "\\3c" + highlight_background
-                + "\\bord8\\shad0\\fscx105\\fad(70,50)}"
+                + "\\bord5\\shad0\\fscx105}"
                 + value + "{\\r}"
             )
-        line.append(value)
-        line_length += len(raw) + (1 if len(line) > 1 else 0)
-    if line:
-        lines.append(line)
-    return r"\N".join(" ".join(items) for items in lines)
+        rendered_words.append(value)
+    return " ".join(rendered_words)
 
 
 def _ass_escape(value: str) -> str:
@@ -271,10 +266,10 @@ def _hex_to_ass(value: str, alpha: int = 0) -> str:
 
 
 def _safe_font_name(value: Any) -> str:
-    value = str(value or "Arial Black").strip()
+    value = str(value or "Arial").strip()
     # Font names are inserted into an ASS header, so keep them single-line.
     value = re.sub(r"[^A-Za-z0-9 ._-]", "", value)
-    return value[:80] or "Arial Black"
+    return value[:80] or "Arial"
 
 
 def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:

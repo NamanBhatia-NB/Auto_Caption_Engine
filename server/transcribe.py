@@ -1,7 +1,7 @@
 """Free transcription providers used by Auto Caption Engine.
 
 The default path is local FFmpeg + whisper.cpp.  It downloads the open Whisper
-base model on first use and needs no account or API key.  Groq is kept as an
+small model on first use and needs no account or API key.  Groq is kept as an
 optional faster free-tier provider for machines that do not want to run local
 inference; credentials are read from the environment/request and never stored.
 """
@@ -20,8 +20,10 @@ import requests
 
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-DEFAULT_MODEL = "ggml-base.bin"
-MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true"
+# The small model is a better local accuracy/speed trade-off than base and
+# materially reduces short-word transcription errors.
+DEFAULT_MODEL = "ggml-small.bin"
+MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin?download=true"
 
 
 def transcribe_with_groq(audio_path: str, api_key: str, language: str = "auto") -> dict:
@@ -116,7 +118,7 @@ def transcribe_with_ffmpeg_whisper_srt(
 
 
 def _ensure_whisper_model(model_name: str = DEFAULT_MODEL) -> str:
-    """Download the open base model once into server/models."""
+    """Download the open small model once into server/models."""
     configured = os.getenv("WHISPER_MODEL_PATH")
     if configured:
         return configured

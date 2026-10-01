@@ -4,7 +4,7 @@ import unittest
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent))
 
 from render import generate_eclipse_ass, merge_style
-from transcribe import _parse_srt_to_segments, retime_segment_text
+from transcribe import DEFAULT_MODEL, _parse_srt_to_segments, retime_segment_text
 
 
 class CaptionEngineTests(unittest.TestCase):
@@ -17,14 +17,36 @@ class CaptionEngineTests(unittest.TestCase):
         self.assertAlmostEqual(result["words"][0]["start"], 1.0)
         self.assertAlmostEqual(result["words"][-1]["end"], 3.0)
 
-    def test_eclipse_ass_switches_active_word_and_wraps_long_cues(self):
-        segment = retime_segment_text("hello eclipse world again", 0, 2)
-        ass = generate_eclipse_ass([segment])
-        self.assertEqual(ass.count("Dialogue:"), 4)
+    def test_eclipse_ass_uses_native_frame_safe_wrapping(self):
+        segment = retime_segment_text("hello eclipse world again this caption needs wrapping", 0, 2)
+        ass = generate_eclipse_ass([segment], style={"uppercase": True})
+        self.assertEqual(ass.count("Dialogue:"), 8)
         self.assertIn("\\c&H0000E0FF", ass)
         self.assertIn("\\3c&H3AA0F0FF", ass)
-        self.assertIn(chr(92) + "N", ass)
+        self.assertNotIn("\\fad(70,50)", ass)
+        self.assertNotIn(chr(92) + "N", ass)
+        self.assertIn("Style: Default,Arial,52", ass)
         self.assertIn("HELLO", ass)
+
+    def test_default_style_keeps_case_and_uses_word_end_boundaries(self):
+        segment = {
+            "text": "hello world",
+            "start": 1,
+            "end": 3,
+            "words": [
+                {"word": "hello", "start": 1, "end": 1.4},
+                {"word": "world", "start": 2, "end": 2.5},
+            ],
+        }
+        ass = generate_eclipse_ass([segment])
+        dialogue_lines = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+        self.assertIn("Dialogue: 0,0:00:01.00,0:00:01.40", dialogue_lines[0])
+        self.assertIn("Dialogue: 0,0:00:02.00,0:00:02.50", dialogue_lines[1])
+        self.assertIn("hello{\\r}", dialogue_lines[0])
+        self.assertNotIn("HELLO", ass)
+
+    def test_local_transcription_defaults_to_more_accurate_small_model(self):
+        self.assertEqual(DEFAULT_MODEL, "ggml-small.bin")
 
     def test_style_values_are_clamped_and_font_name_is_safe(self):
         style = merge_style({"font_size": 999, "margin_bottom": -1, "font_name": "Arial,evil\\tag"})

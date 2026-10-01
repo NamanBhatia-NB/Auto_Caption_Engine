@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
 import './styles.css';
 
 const API = import.meta.env.VITE_API_URL || '';
 const ACCEPTED = '.mp4,.mov,.avi,.mkv,.webm,video/*';
 const DEFAULT_STYLE = {
-  font_name: 'Arial Black',
-  font_size: 64,
+  font_name: 'Arial',
+  font_size: 52,
   primary_color: '#FFFFFF',
   highlight_color: '#FFE000',
   highlight_background: '#FFF0A0',
   background_alpha: 58,
   outline_color: '#111111',
-  outline_width: 3,
-  shadow_depth: 3,
+  outline_width: 2,
+  shadow_depth: 2,
   margin_bottom: 300,
   max_words: 5,
-  uppercase: true,
+  uppercase: false,
 };
 
 async function request(path, options = {}) {
@@ -29,10 +30,8 @@ function App() {
   const [file, setFile] = useState(null);
   const [job, setJob] = useState(null);
   const [captions, setCaptions] = useState(null);
-  const [style, setStyle] = useState(DEFAULT_STYLE);
-  const [mode, setMode] = useState('local');
+  const style = DEFAULT_STYLE;
   const [language, setLanguage] = useState('auto');
-  const [groqKey, setGroqKey] = useState('');
   const [message, setMessage] = useState('Drop a video to begin.');
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -41,6 +40,7 @@ function App() {
   const [showRendered, setShowRendered] = useState(false);
   const [captionsDirty, setCaptionsDirty] = useState(false);
   const videoRef = useRef(null);
+  const animationFrameRef = useRef(null);
   const inputRef = useRef(null);
 
   const busy = job && ['transcribing', 'rendering'].includes(job.status);
@@ -55,7 +55,7 @@ function App() {
 
   const activeSegment = useMemo(() => {
     if (!captions?.segments) return null;
-    return captions.segments.find((segment) => currentTime >= segment.start && currentTime <= segment.end) || null;
+    return captions.segments.find((segment) => currentTime >= segment.start && currentTime < segment.end) || null;
   }, [captions, currentTime]);
 
   const syncJob = useCallback(async (jobId) => {
@@ -110,7 +110,7 @@ function App() {
       setCaptionsDirty(false);
       setShowRendered(false);
       setCurrentTime(0);
-      setMessage('Upload complete. Pick a free transcription mode to continue.');
+      setMessage('Upload complete. Whisper is ready to generate captions.');
     } catch (requestError) {
       setError(requestError.message);
       setMessage('Upload could not be completed.');
@@ -120,13 +120,13 @@ function App() {
   async function transcribe() {
     if (!job?.job_id) return;
     setError('');
-    setMessage(mode === 'local' ? 'Starting local Whisper. The first run downloads the free base model once…' : 'Sending audio to the optional Groq free tier…');
+    setMessage('Starting local Whisper. The first run downloads the more accurate free small model once…');
     setJob((previous) => ({ ...previous, status: 'transcribing' }));
     try {
       await request('/api/transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: job.job_id, mode, language, ...(mode === 'groq' && groqKey ? { api_key: groqKey } : {}) }),
+        body: JSON.stringify({ job_id: job.job_id, mode: 'local', language }),
       });
     } catch (requestError) {
       setError(requestError.message);
@@ -236,7 +236,26 @@ function App() {
                       controls
                       playsInline
                       onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-                      onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || job?.video_info?.duration || 0)}
+                      onLoadedMetadata={(event) => {
+                        setDuration(event.currentTarget.duration || job?.video_info?.duration || 0);
+                        setCurrentTime(event.currentTarget.currentTime);
+                      }}
+                      onPlay={(event) => {
+                        const video = event.currentTarget;
+                        const updateTime = () => {
+                          setCurrentTime(video.currentTime);
+                          if (!video.paused && !video.ended) {
+                            animationFrameRef.current = window.requestAnimationFrame(updateTime);
+                          }
+                        };
+                        window.cancelAnimationFrame(animationFrameRef.current);
+                        updateTime();
+                      }}
+                      onPause={(event) => {
+                        window.cancelAnimationFrame(animationFrameRef.current);
+                        setCurrentTime(event.currentTarget.currentTime);
+                      }}
+                      onSeeked={(event) => setCurrentTime(event.currentTarget.currentTime)}
                     />
                     {!showRendered && <CaptionOverlay segment={activeSegment} currentTime={currentTime} uppercase={style.uppercase} />}
                     <div className="timecode">{formatTime(currentTime)} / {formatTime(duration || job?.video_info?.duration || 0)}</div>
@@ -284,23 +303,11 @@ function App() {
             </section>
 
             <section className="panel settings-panel">
-              <div className="panel-heading compact"><div><span className="panel-kicker">CAPTION ENGINE</span><h2>Generate captions</h2></div><span className="free-badge">FREE</span></div>
-              <label className="field-label">Transcription engine</label>
-              <div className="segmented"><button className={mode === 'local' ? 'selected' : ''} onClick={() => setMode('local')}>Local Whisper <small>offline</small></button><button className={mode === 'groq' ? 'selected' : ''} onClick={() => setMode('groq')}>Groq <small>free tier</small></button></div>
+              <div className="panel-heading compact"><div><span className="panel-kicker">CAPTION ENGINE</span><h2>Generate Whisper captions</h2></div><span className="free-badge">FREE</span></div>
               <label className="field-label" htmlFor="language">Spoken language</label>
               <select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}><option value="auto">Auto detect</option><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select>
-              {mode === 'groq' && <><label className="field-label" htmlFor="groq-key">Groq API key <small>optional if in server/.env</small></label><input id="groq-key" className="text-field" type="password" placeholder="Used for this session only" value={groqKey} onChange={(event) => setGroqKey(event.target.value)} /></>}
               <button className="primary-button full" disabled={!hasVideo || busy} onClick={transcribe}>{busy && job.status === 'transcribing' ? <Spinner /> : 'Generate captions'} <b>✦</b></button>
-              <p className="microcopy">Local mode uses FFmpeg + the open Whisper base model. No account or key required.</p>
-            </section>
-
-            <section className="panel style-panel">
-              <div className="panel-heading compact"><div><span className="panel-kicker">ECLIPSE STYLE</span><h2>Shape the look</h2></div><span className="style-orb">◐</span></div>
-              <div className="style-swatch"><span className="swatch-text">WORD</span><span className="swatch-highlight">LAND</span><span className="swatch-text">.</span></div>
-              <div className="control-grid"><ColorControl label="Text" value={style.primary_color} onChange={(value) => setStyle({ ...style, primary_color: value })} /><ColorControl label="Highlight" value={style.highlight_color} onChange={(value) => setStyle({ ...style, highlight_color: value })} /></div>
-              <label className="range-label"><span>Type scale</span><b>{style.font_size}px</b></label><input type="range" min="42" max="88" value={style.font_size} onChange={(event) => setStyle({ ...style, font_size: Number(event.target.value) })} />
-              <label className="range-label"><span>Vertical position</span><b>{style.margin_bottom}px</b></label><input type="range" min="120" max="460" value={style.margin_bottom} onChange={(event) => setStyle({ ...style, margin_bottom: Number(event.target.value) })} />
-              <label className="toggle-row"><span>Uppercase words</span><input type="checkbox" checked={style.uppercase} onChange={(event) => setStyle({ ...style, uppercase: event.target.checked })} /><i /></label>
+              <p className="microcopy">Uses the local FFmpeg Whisper small model. No account or key required.</p>
             </section>
 
             <button className="export-button" disabled={!hasCaptions || busy || captionsDirty} onClick={renderVideo}><span className="export-icon">↓</span><span><b>{busy && job.status === 'rendering' ? 'Rendering video…' : 'Render & export'}</b><small>{captionsDirty ? 'Save transcript edits first' : 'Burn Eclipse captions into MP4'}</small></span><strong>→</strong></button>
@@ -316,28 +323,11 @@ function App() {
 
 function CaptionOverlay({ segment, currentTime, uppercase }) {
   if (!segment) return null;
-  const lines = [];
-  let line = [];
-  let lineLength = 0;
-  (segment.words || []).forEach((word, index) => {
+  return <div className="caption-overlay"><div className="caption-line">{(segment.words || []).map((word, index) => {
     const value = uppercase ? word.word.toUpperCase() : word.word;
-    if (line.length && lineLength + value.length + 1 > 18) {
-      lines.push(line);
-      line = [];
-      lineLength = 0;
-    }
-    line.push({ ...word, index, value });
-    lineLength += value.length + (line.length > 1 ? 1 : 0);
-  });
-  if (line.length) lines.push(line);
-  return <div className="caption-overlay">{lines.map((captionLine, lineIndex) => <div className="caption-line" key={lineIndex}>{captionLine.map((word) => {
-    const active = currentTime >= word.start && currentTime <= word.end;
-    return <span className={active ? 'caption-word active' : 'caption-word'} key={`${word.start}-${word.index}`}>{word.value}</span>;
-  })}</div>)}</div>;
-}
-
-function ColorControl({ label, value, onChange }) {
-  return <label className="color-control"><span>{label}</span><input type="color" value={value} onChange={(event) => onChange(event.target.value)} /><code>{value}</code></label>;
+    const active = currentTime >= word.start && currentTime < word.end;
+    return <span className={active ? 'caption-word active' : 'caption-word'} key={`${word.start}-${index}`}>{value}</span>;
+  })}</div></div>;
 }
 
 function Spinner() { return <span className="spinner" aria-label="Working" />; }
@@ -345,3 +335,5 @@ function formatTime(value) { if (!Number.isFinite(value)) return '00:00'; const 
 function formatBytes(bytes) { if (!bytes) return '0 KB'; const units = ['B', 'KB', 'MB', 'GB']; const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1); return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 
 export default App;
+
+createRoot(document.getElementById('root')).render(<App />);
