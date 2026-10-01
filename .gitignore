@@ -13,5 +13,5 @@ server/__pycache__/
 .DS_Store
 scratch/
 __agent__/
-*.mp4
+Eclipse.mp4
 *.png
