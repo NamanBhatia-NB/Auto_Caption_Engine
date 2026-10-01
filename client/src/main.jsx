@@ -9,6 +9,8 @@ const DEFAULT_STYLE = {
   font_size: 52,
   primary_color: '#FFFFFF',
   highlight_color: '#FFE000',
+  highlight_background: '#FFF0A0',
+  background_alpha: 58,
   margin_bottom: 300,
   max_words: 5,
   uppercase: false,

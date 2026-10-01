@@ -24,6 +24,8 @@ ECLIPSE_STYLE: dict[str, Any] = {
     "font_size": 52,
     "primary_color": "#FFFFFF",
     "highlight_color": "#FFE000",
+    "highlight_background": "#FFF0A0",
+    "background_alpha": 58,
     "margin_bottom": 300,
     "max_words": 5,
     "uppercase": False,
@@ -40,6 +42,7 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
     merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, 52)
     merged["margin_bottom"] = _clamp_int(merged.get("margin_bottom"), 40, 700, 300)
     merged["max_words"] = _clamp_int(merged.get("max_words"), 2, 8, 5)
+    merged["background_alpha"] = _clamp_int(merged.get("background_alpha"), 0, 100, 58)
     uppercase = merged.get("uppercase", False)
     if isinstance(uppercase, str):
         uppercase = uppercase.strip().lower() in {"1", "true", "yes", "on"}
@@ -48,6 +51,7 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
     for key, fallback in (
         ("primary_color", "#FFFFFF"),
         ("highlight_color", "#FFE000"),
+        ("highlight_background", "#FFF0A0"),
     ):
         merged[key] = _normalise_hex(merged.get(key), fallback)
     return merged
@@ -68,7 +72,7 @@ def generate_eclipse_ass(
     margin_bottom = max(round(s["margin_bottom"] * height / 1920.0), 30)
 
     primary = _hex_to_ass(s["primary_color"])
-    highlight = _hex_to_ass(s["highlight_color"])
+    highlight_background = _hex_to_ass(s["highlight_background"], alpha=s["background_alpha"])
 
     ass = f"""[Script Info]
 Title: Eclipse Auto Captions
@@ -117,7 +121,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 words,
                 index,
                 uppercase=s["uppercase"],
-                highlight=highlight,
+                highlight_background=highlight_background,
             )
             ass += _dialogue(start, end, text)
 
@@ -199,7 +203,7 @@ def _build_event_text(
     words: list[dict],
     active_index: int,
     uppercase: bool,
-    highlight: str,
+    highlight_background: str,
 ) -> str:
     """Render a cue and insert the same readable line breaks for every word."""
     rendered_words: list[str] = []
@@ -209,9 +213,13 @@ def _build_event_text(
         if not value:
             continue
         if word_index == active_index:
-            # The reference uses a clean color change only: no border,
-            # shadow, glow, or translucent background.
-            value = "{\\c" + highlight + "}" + value + "{\\r}"
+            # A translucent yellow border creates the word-shaped highlight;
+            # the fill is dark and there is no black/white outline or shadow.
+            value = (
+                "{\\c&H00111111\\3c" + highlight_background
+                + "\\bord8\\shad0}"
+                + value + "{\\r}"
+            )
         rendered_words.append(value)
     return " ".join(rendered_words)
 
