@@ -1,0 +1,15 @@
+node_modules/
+client/dist/
+server/uploads/
+server/outputs/
+server/models/
+server/__pycache__/
+.venv/
+.env
+.env.*
+!server/.env.example
+*.pyc
+.pytest_cache/
+.DS_Store
+scratch/
+__agent__/
