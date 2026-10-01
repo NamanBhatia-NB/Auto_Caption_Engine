@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 from render import ECLIPSE_STYLE, generate_eclipse_ass, render_captioned_video
 from transcribe import retime_segment_text, transcribe_with_faster_whisper
 
+
 load_dotenv()
 
 app = Flask(__name__)

@@ -150,13 +150,3 @@ ASS word events → FFmpeg/libass → captioned.mp4
 python -m unittest discover server -p "test_*.py"
 cd client && npm run build
 ```
-
-## Assignment status
-
-- [x] Upload, metadata, and local preview.
-- [x] Local Faster-Whisper transcription with word-level timestamps.
-- [x] Editable transcript with retimed edits.
-- [x] Clean Eclipse-style live and rendered captions.
-- [x] FFmpeg/libass MP4 export and download.
-- [x] Local-only workflow without HyperFrames or paid APIs.
-- [ ] Record the Loom walkthrough using `LOOM_SCRIPT.md`.
