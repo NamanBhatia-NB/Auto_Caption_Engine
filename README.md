@@ -24,10 +24,6 @@ The caption design is based on the supplied `eclipse.png` and `Eclipse.mp4` refe
 
 The UI always uses local Faster-Whisper. There is no transcription-engine selector and no hosted transcription dependency in the current flow. API keys are not required.
 
-## Is HyperFrames used?
-
-No. HyperFrames is **not used** in this implementation. The assignment suggested it as one possible tool, but this project uses React/Vite, Flask, Faster-Whisper, FFmpeg, and libass so the complete workflow can run locally without a paid service.
-
 ## Prerequisites
 
 - Python 3.11+
