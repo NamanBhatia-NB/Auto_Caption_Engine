@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 from render import ECLIPSE_STYLE, generate_eclipse_ass, render_captioned_video
 from transcribe import (
     retime_segment_text,
+    transcribe_with_faster_whisper,
     transcribe_with_ffmpeg_whisper_srt,
     transcribe_with_groq,
 )
@@ -105,7 +106,7 @@ def upload_video():
 
 @app.route("/api/transcribe", methods=["POST"])
 def start_transcription():
-    """Start local Whisper transcription or the optional Groq free tier."""
+    """Start local Faster-Whisper transcription or the optional Groq fallback."""
     data = request.get_json(silent=True) or {}
     job_id = data.get("job_id")
     mode = str(data.get("mode", "local")).lower()
@@ -118,11 +119,12 @@ def start_transcription():
     if job["status"] not in {"uploaded", "transcribed", "error"}:
         return jsonify({"error": f"Cannot transcribe while job is {job['status']}."}), 409
 
-    job.update({"status": "transcribing", "progress": 5, "error": None})
+    job.update({"status": "transcribing", "progress": 5, "phase": "preparing audio", "error": None})
 
     def worker():
         try:
             if mode == "groq":
+                job.update({"progress": 10, "phase": "extracting audio"})
                 api_key = data.get("api_key") or os.getenv("GROQ_API_KEY")
                 if not api_key:
                     raise ValueError(
@@ -134,14 +136,23 @@ def start_transcription():
                 finally:
                     Path(audio_path).unlink(missing_ok=True)
             else:
-                result = transcribe_with_ffmpeg_whisper_srt(
-                    job["video_path"], data.get("model_path") or os.getenv("WHISPER_MODEL_PATH"), language
-                )
+                job.update({"progress": 10, "phase": "extracting audio"})
+                audio_path = extract_audio(job["video_path"], job_id, suffix=".wav")
+                try:
+                    job.update({"progress": 20, "phase": "loading faster-whisper model"})
+                    result = transcribe_with_faster_whisper(
+                        audio_path,
+                        language=language,
+                        model_size=data.get("model_size")
+                        or os.getenv("WHISPER_MODEL_SIZE"),
+                    )
+                finally:
+                    Path(audio_path).unlink(missing_ok=True)
             if not result.get("segments"):
                 raise ValueError("No spoken words were returned by the transcription engine.")
-            job.update({"captions": result, "status": "transcribed", "progress": 45, "error": None})
+            job.update({"captions": result, "status": "transcribed", "progress": 100, "phase": "complete", "error": None})
         except Exception as error:  # surfaced through /api/status without exposing secrets
-            job.update({"status": "error", "progress": 0, "error": str(error)})
+            job.update({"status": "error", "progress": 0, "phase": "error", "error": str(error)})
 
     Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id, "status": "transcribing"})
@@ -196,6 +207,7 @@ def get_status(job_id: str):
         "job_id": job_id,
         "status": job["status"],
         "progress": job.get("progress", 0),
+        "phase": job.get("phase"),
         "video_info": job.get("video_info"),
         "filename": job.get("original_filename"),
         "error": job.get("error"),
@@ -334,11 +346,15 @@ def get_video_info(path: str) -> dict:
     }
 
 
-def extract_audio(video_path: str, job_id: str) -> str:
-    audio_path = str(UPLOAD_DIR / job_id / "audio.mp3")
+def extract_audio(video_path: str, job_id: str, suffix: str = ".mp3") -> str:
+    audio_path = str(UPLOAD_DIR / job_id / f"audio{suffix}")
+    if suffix == ".wav":
+        codec_args = ["-c:a", "pcm_s16le"]
+    else:
+        codec_args = ["-codec:a", "libmp3lame", "-q:a", "4"]
     command = [
         "ffmpeg", "-hide_banner", "-y", "-i", video_path,
-        "-vn", "-ac", "1", "-ar", "16000", "-codec:a", "libmp3lame", "-q:a", "4", audio_path,
+        "-vn", "-ac", "1", "-ar", "16000", *codec_args, audio_path,
     ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
@@ -361,5 +377,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
     print(f"\nAuto Caption Engine API: http://localhost:{port}")
-    print("Local Whisper mode: free, offline after the model download")
+    print("Local Faster-Whisper mode: free, offline after the model download")
     app.run(host="0.0.0.0", port=port, debug=debug)

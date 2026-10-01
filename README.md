@@ -17,8 +17,8 @@ The assignment suggested HyperFrames and a hosted transcription API. This implem
 | Layer | Choice | Reason |
 | --- | --- | --- |
 | UI | React + Vite | Small, fast local development server with an editable transcript and live browser preview. |
-| Transcription (default) | FFmpeg's `whisper` filter backed by whisper.cpp | Free/offline after the more accurate open `ggml-small.bin` model is downloaded; it produces timed subtitle cues with no API key. |
-| Optional faster transcription | Groq free tier + Whisper | Supported as an optional mode for machines that do not have a Whisper-enabled FFmpeg build. The key is read from `.env` or passed for the current request only. |
+| Transcription (default) | Faster-Whisper | Free/offline after the local CTranslate2 model is downloaded; it produces real word-level timestamps without an API key. CPU defaults use the faster `base` model, `int8` compute, and beam size 1. |
+| Optional hosted transcription | Groq free tier + Whisper | Retained as a server-side fallback for machines that need hosted inference. The key is read from `.env` or passed for the current request only. |
 | Composition/rendering | FFmpeg + libass ASS subtitles | Free, deterministic, supports word timing, styling, outlines, per-word override tags, and MP4 output. |
 
 No OpenAI or ElevenLabs calls are required. Free-tier quotas and hosted-provider terms can change, so **Local Whisper is the default and recommended path**.
@@ -28,13 +28,8 @@ No OpenAI or ElevenLabs calls are required. Free-tier quotas and hosted-provider
 - Python 3.11+ (tested with Python 3.14)
 - Node.js 18+
 - FFmpeg and FFprobe on `PATH`
-- An FFmpeg build with the `whisper` filter for the no-key local path:
-
-```bash
-ffmpeg -h filter=whisper
-```
-
-The output should include `Transcribe audio using whisper.cpp`. Recent full builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) include it. If the filter is missing, use the optional Groq free-tier mode or install a Whisper-enabled FFmpeg build.
+- FFmpeg and FFprobe on `PATH` for audio extraction and rendering.
+- A machine with enough RAM for the selected Faster-Whisper model. CPU defaults are intentionally optimized for responsiveness; set `WHISPER_MODEL_SIZE=small` or `medium` only when accuracy is worth the extra time.
 
 ## Setup
 
@@ -59,7 +54,7 @@ python -m pip install -r server/requirements.txt
 cd client && npm install
 ```
 
-Optional hosted mode configuration:
+Optional server configuration:
 
 ```bash
 # Windows: copy server\.env.example server\.env
@@ -91,18 +86,18 @@ npm run dev
 
 Open the Vite URL printed in the terminal (normally <http://localhost:3000>).
 
-The first Local Whisper transcription downloads the public `ggml-small.bin` model into `server/models/` (roughly 466 MB). It is cached locally and is not committed. For a different open model, set `WHISPER_MODEL_PATH` in `server/.env` to its GGML file.
+The first Faster-Whisper transcription downloads the selected CTranslate2 model into the Hugging Face cache. With the default `base` model and CPU `int8` settings it is much faster than `medium`/`large-v3-turbo`; the model is reused by subsequent jobs. Configure `WHISPER_MODEL_SIZE`, `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE`, and `WHISPER_BEAM_SIZE` in `server/.env`.
 
 ## User flow
 
 1. Drop an MP4/MOV/AVI/MKV/WebM file into the input panel.
-2. Select **Local Whisper** and a spoken language, then choose **Generate captions**. Auto detect is available.
+2. Choose a spoken language, then choose **Generate captions**. The app always uses local Faster-Whisper; auto detect is available.
 3. Scrub the live video preview. The browser overlay follows the current word. Edit any transcript cue and choose **Save edits**; the original timing window is retained and words are re-timed across the edited text.
-4. Adjust the Eclipse text color, highlight color, scale, vertical position, or uppercase switch.
+4. Review the fixed Eclipse caption treatment in the live preview.
 5. Choose **Render & export**. FFmpeg burns the captions into `captioned.mp4`.
 6. Switch between the live overlay and rendered file, then download **final MP4**.
 
-The UI also has a Groq option. It is not necessary for the normal free/local workflow; set `GROQ_API_KEY` in `server/.env` or enter a key in the session-only field.
+The server retains Groq support for optional API-level fallback use, but the UI intentionally uses local Faster-Whisper only.
 
 ## Architecture
 
@@ -112,7 +107,7 @@ React/Vite
    ▼
 Flask job registry + server/uploads/<job-id>/input.*
    │
-   ├─ Local: FFmpeg whisper filter → SRT → word timings
+   ├─ Local: FFmpeg audio extraction → Faster-Whisper → real word timings
    └─ Groq: audio extraction → verbose JSON → word timings
            │
            ▼

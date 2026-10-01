@@ -4,7 +4,12 @@ import unittest
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent))
 
 from render import generate_eclipse_ass, merge_style
-from transcribe import DEFAULT_MODEL, _parse_srt_to_segments, retime_segment_text
+from transcribe import (
+    DEFAULT_FASTER_WHISPER_MODEL,
+    DEFAULT_MODEL,
+    _parse_srt_to_segments,
+    retime_segment_text,
+)
 
 
 class CaptionEngineTests(unittest.TestCase):
@@ -45,7 +50,8 @@ class CaptionEngineTests(unittest.TestCase):
         self.assertIn("hello{\\r}", dialogue_lines[0])
         self.assertNotIn("HELLO", ass)
 
-    def test_local_transcription_defaults_to_more_accurate_small_model(self):
+    def test_transcription_defaults_are_fast_and_legacy_fallback_remains_available(self):
+        self.assertEqual(DEFAULT_FASTER_WHISPER_MODEL, "base")
         self.assertEqual(DEFAULT_MODEL, "ggml-small.bin")
 
     def test_style_values_are_clamped_and_font_name_is_safe(self):

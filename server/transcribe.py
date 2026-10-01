@@ -1,9 +1,9 @@
 """Free transcription providers used by Auto Caption Engine.
 
-The default path is local FFmpeg + whisper.cpp.  It downloads the open Whisper
-small model on first use and needs no account or API key.  Groq is kept as an
-optional faster free-tier provider for machines that do not want to run local
-inference; credentials are read from the environment/request and never stored.
+The default path is local Faster-Whisper. It downloads a CTranslate2 model on
+first use, preserves real word timestamps, and needs no account or API key.
+Groq is kept as an optional server-side provider; credentials are read from the
+environment/request and never stored.
 """
 
 from __future__ import annotations
@@ -13,18 +13,189 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 import requests
 
+_whisper_model_cache: dict[tuple[str, str, str], Any] = {}
+_whisper_model_lock = threading.Lock()
+DEFAULT_FASTER_WHISPER_MODEL = "base"
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-# The small model is a better local accuracy/speed trade-off than base and
-# materially reduces short-word transcription errors.
+# Kept for compatibility with the older FFmpeg whisper.cpp fallback path.
 DEFAULT_MODEL = "ggml-small.bin"
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin?download=true"
 
+def transcribe_with_faster_whisper(
+    audio_or_video_path: str,
+    language: str = "auto",
+    model_size: str | None = None,
+) -> dict:
+    """Transcribe locally with faster-whisper and preserve real word timings."""
+
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise RuntimeError(
+            "faster-whisper is not installed. "
+            "Run: python -m pip install faster-whisper"
+        ) from exc
+
+    model_name = (model_size or os.getenv(
+        "WHISPER_MODEL_SIZE",
+        DEFAULT_FASTER_WHISPER_MODEL,
+    )).strip()
+
+    device = os.getenv(
+        "WHISPER_DEVICE",
+        "cpu",
+    ).strip().lower()
+
+    compute_type = os.getenv(
+        "WHISPER_COMPUTE_TYPE",
+        "int8" if device == "cpu" else "float16",
+    ).strip()
+
+    cache_key = (model_name, device, compute_type)
+
+    model = _whisper_model_cache.get(cache_key)
+
+    if model is None:
+        # Flask can receive more than one request while the first model is
+        # loading. Serialize construction so the model is downloaded/loaded
+        # once rather than duplicated in memory and CPU work.
+        with _whisper_model_lock:
+            model = _whisper_model_cache.get(cache_key)
+            if model is None:
+                try:
+                    model = WhisperModel(
+                        model_name,
+                        device=device,
+                        compute_type=compute_type,
+                        download_root=os.getenv("WHISPER_DOWNLOAD_ROOT") or None,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Could not load faster-whisper model "
+                        f"'{model_name}' on {device}/{compute_type}: {exc}"
+                    ) from exc
+                _whisper_model_cache[cache_key] = model
+
+    requested_language = (
+        None
+        if not language or language == "auto"
+        else language
+    )
+
+    try:
+        segments_iter, info = model.transcribe(
+            audio_or_video_path,
+
+            language=requested_language,
+            task="transcribe",
+
+            beam_size=max(int(os.getenv("WHISPER_BEAM_SIZE", "1")), 1),
+            word_timestamps=True,
+            vad_filter=os.getenv("WHISPER_VAD", "false").lower() in {
+                "1", "true", "yes", "on",
+            },
+            condition_on_previous_text=os.getenv(
+                "WHISPER_CONDITION_ON_PREVIOUS_TEXT", "false"
+            ).lower() in {"1", "true", "yes", "on"},
+            temperature=0.0,
+        )
+
+        segments = []
+        all_words = []
+
+        for raw_segment in segments_iter:
+            segment_words = []
+
+            for raw_word in raw_segment.words or []:
+                value = str(raw_word.word or "").strip()
+
+                if not value:
+                    continue
+
+                start = max(
+                    float(raw_word.start),
+                    0.0,
+                )
+
+                end = max(
+                    float(raw_word.end),
+                    start + 0.01,
+                )
+
+                word = {
+                    "word": value,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                }
+
+                segment_words.append(word)
+                all_words.append(word)
+
+            text = str(
+                raw_segment.text or ""
+            ).strip()
+
+            if segment_words:
+                segments.extend(
+                    _group_words_into_segments(
+                        segment_words
+                    )
+                )
+
+            elif text:
+                segments.append({
+                    "text": text,
+                    "start": round(
+                        float(raw_segment.start),
+                        3,
+                    ),
+                    "end": round(
+                        float(raw_segment.end),
+                        3,
+                    ),
+                    "words": [],
+                })
+
+        if not segments:
+            raise ValueError(
+                "No speech was detected in the audio."
+            )
+
+        return {
+            "text": " ".join(
+                segment["text"]
+                for segment in segments
+            ),
+
+            "language": getattr(
+                info,
+                "language",
+                language,
+            ),
+
+            "words": all_words,
+            "segments": segments,
+
+            "provider": "faster-whisper",
+            "model": model_name,
+            "device": device,
+            "compute_type": compute_type,
+        }
+
+    except Exception as exc:
+        if isinstance(exc, ValueError):
+            raise
+
+        raise RuntimeError(
+            f"faster-whisper transcription failed: {exc}"
+        ) from exc
 
 def transcribe_with_groq(audio_path: str, api_key: str, language: str = "auto") -> dict:
     """Transcribe through Groq's free tier, returning word timestamps."""

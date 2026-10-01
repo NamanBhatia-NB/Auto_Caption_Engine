@@ -68,6 +68,8 @@ function App() {
       }
       if (next.status === 'transcribed') {
         setMessage('Captions are ready. Review the transcript or render the Eclipse preview.');
+      } else if (next.status === 'transcribing') {
+        setMessage(`Whisper ${next.phase || 'is transcribing'}… ${next.progress || 0}%`);
       } else if (next.status === 'rendered') {
         setMessage('Export is ready. Preview it here or download the MP4.');
         setShowRendered(true);
@@ -81,7 +83,7 @@ function App() {
 
   useEffect(() => {
     if (!job?.job_id || !busy) return undefined;
-    const timer = window.setInterval(() => syncJob(job.job_id), 1500);
+    const timer = window.setInterval(() => syncJob(job.job_id), 2500);
     return () => window.clearInterval(timer);
   }, [busy, job?.job_id, syncJob]);
 
@@ -120,8 +122,8 @@ function App() {
   async function transcribe() {
     if (!job?.job_id) return;
     setError('');
-    setMessage('Starting local Whisper. The first run downloads the more accurate free small model once…');
-    setJob((previous) => ({ ...previous, status: 'transcribing' }));
+    setMessage('Starting Faster-Whisper. The first run downloads the local model once…');
+    setJob((previous) => ({ ...previous, status: 'transcribing', phase: 'preparing audio', progress: 5 }));
     try {
       await request('/api/transcribe', {
         method: 'POST',
@@ -307,7 +309,7 @@ function App() {
               <label className="field-label" htmlFor="language">Spoken language</label>
               <select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}><option value="auto">Auto detect</option><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select>
               <button className="primary-button full" disabled={!hasVideo || busy} onClick={transcribe}>{busy && job.status === 'transcribing' ? <Spinner /> : 'Generate captions'} <b>✦</b></button>
-              <p className="microcopy">Uses the local FFmpeg Whisper small model. No account or key required.</p>
+              <p className="microcopy">Uses Faster-Whisper locally with word-level timestamps. No account or key required.</p>
             </section>
 
             <button className="export-button" disabled={!hasCaptions || busy || captionsDirty} onClick={renderVideo}><span className="export-icon">↓</span><span><b>{busy && job.status === 'rendering' ? 'Rendering video…' : 'Render & export'}</b><small>{captionsDirty ? 'Save transcript edits first' : 'Burn Eclipse captions into MP4'}</small></span><strong>→</strong></button>
