@@ -38,10 +38,14 @@ The project uses the `base` model by default on CPU. For better accuracy at the 
 ### Windows PowerShell
 
 ```powershell
+# Terminal 1
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r server\requirements.txt
+```
 
+```powershell
+# Terminal 2
 cd client
 npm install
 ```
