@@ -21,12 +21,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from render import ECLIPSE_STYLE, generate_eclipse_ass, render_captioned_video
-from transcribe import (
-    retime_segment_text,
-    transcribe_with_faster_whisper,
-    transcribe_with_ffmpeg_whisper_srt,
-    transcribe_with_groq,
-)
+from transcribe import retime_segment_text, transcribe_with_faster_whisper
 
 load_dotenv()
 
@@ -106,16 +101,13 @@ def upload_video():
 
 @app.route("/api/transcribe", methods=["POST"])
 def start_transcription():
-    """Start local Faster-Whisper transcription or the optional Groq fallback."""
+    """Start local Faster-Whisper transcription."""
     data = request.get_json(silent=True) or {}
     job_id = data.get("job_id")
-    mode = str(data.get("mode", "local")).lower()
     language = str(data.get("language", "auto")).lower()
     job = jobs.get(job_id)
     if not job:
         return jsonify({"error": "Invalid job id."}), 400
-    if mode not in {"local", "groq"}:
-        return jsonify({"error": "Transcription mode must be local or groq."}), 400
     if job["status"] not in {"uploaded", "transcribed", "error"}:
         return jsonify({"error": f"Cannot transcribe while job is {job['status']}."}), 409
 
@@ -123,31 +115,18 @@ def start_transcription():
 
     def worker():
         try:
-            if mode == "groq":
-                job.update({"progress": 10, "phase": "extracting audio"})
-                api_key = data.get("api_key") or os.getenv("GROQ_API_KEY")
-                if not api_key:
-                    raise ValueError(
-                        "Groq mode needs GROQ_API_KEY in server/.env. Local mode needs no key."
-                    )
-                audio_path = extract_audio(job["video_path"], job_id)
-                try:
-                    result = transcribe_with_groq(audio_path, api_key, language)
-                finally:
-                    Path(audio_path).unlink(missing_ok=True)
-            else:
-                job.update({"progress": 10, "phase": "extracting audio"})
-                audio_path = extract_audio(job["video_path"], job_id, suffix=".wav")
-                try:
-                    job.update({"progress": 20, "phase": "loading faster-whisper model"})
-                    result = transcribe_with_faster_whisper(
-                        audio_path,
-                        language=language,
-                        model_size=data.get("model_size")
-                        or os.getenv("WHISPER_MODEL_SIZE"),
-                    )
-                finally:
-                    Path(audio_path).unlink(missing_ok=True)
+            job.update({"progress": 10, "phase": "extracting audio"})
+            audio_path = extract_audio(job["video_path"], job_id, suffix=".wav")
+            try:
+                job.update({"progress": 20, "phase": "loading faster-whisper model"})
+                result = transcribe_with_faster_whisper(
+                    audio_path,
+                    language=language,
+                    model_size=data.get("model_size")
+                    or os.getenv("WHISPER_MODEL_SIZE"),
+                )
+            finally:
+                Path(audio_path).unlink(missing_ok=True)
             if not result.get("segments"):
                 raise ValueError("No spoken words were returned by the transcription engine.")
             job.update({"captions": result, "status": "transcribed", "progress": 100, "phase": "complete", "error": None})
@@ -315,7 +294,7 @@ def health():
         "status": "ok",
         "ffmpeg": {"available": ffmpeg_ok, "version": version},
         "local_transcription": ffmpeg_ok,
-        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "transcription": "faster-whisper",
         "active_jobs": len(jobs),
     })
 
@@ -346,12 +325,9 @@ def get_video_info(path: str) -> dict:
     }
 
 
-def extract_audio(video_path: str, job_id: str, suffix: str = ".mp3") -> str:
+def extract_audio(video_path: str, job_id: str, suffix: str = ".wav") -> str:
     audio_path = str(UPLOAD_DIR / job_id / f"audio{suffix}")
-    if suffix == ".wav":
-        codec_args = ["-c:a", "pcm_s16le"]
-    else:
-        codec_args = ["-codec:a", "libmp3lame", "-q:a", "4"]
+    codec_args = ["-c:a", "pcm_s16le"]
     command = [
         "ffmpeg", "-hide_banner", "-y", "-i", video_path,
         "-vn", "-ac", "1", "-ar", "16000", *codec_args, audio_path,

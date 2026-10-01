@@ -24,14 +24,8 @@ ECLIPSE_STYLE: dict[str, Any] = {
     "font_size": 52,
     "primary_color": "#FFFFFF",
     "highlight_color": "#FFE000",
-    "highlight_background": "#FFF0A0",
-    "background_alpha": 58,  # ASS alpha: 0 is opaque, 100 is transparent.
-    "outline_color": "#111111",
-    "outline_width": 2,
-    "shadow_depth": 2,
     "margin_bottom": 300,
     "max_words": 5,
-    "max_line_chars": 30,
     "uppercase": False,
 }
 
@@ -44,12 +38,8 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
 
     merged["font_name"] = _safe_font_name(merged["font_name"])
     merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, 52)
-    merged["outline_width"] = _clamp_int(merged.get("outline_width"), 0, 10, 2)
-    merged["shadow_depth"] = _clamp_int(merged.get("shadow_depth"), 0, 12, 2)
     merged["margin_bottom"] = _clamp_int(merged.get("margin_bottom"), 40, 700, 300)
     merged["max_words"] = _clamp_int(merged.get("max_words"), 2, 8, 5)
-    merged["max_line_chars"] = _clamp_int(merged.get("max_line_chars"), 10, 30, 30)
-    merged["background_alpha"] = _clamp_int(merged.get("background_alpha"), 0, 100, 58)
     uppercase = merged.get("uppercase", False)
     if isinstance(uppercase, str):
         uppercase = uppercase.strip().lower() in {"1", "true", "yes", "on"}
@@ -58,8 +48,6 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
     for key, fallback in (
         ("primary_color", "#FFFFFF"),
         ("highlight_color", "#FFE000"),
-        ("highlight_background", "#FFF0A0"),
-        ("outline_color", "#111111"),
     ):
         merged[key] = _normalise_hex(merged.get(key), fallback)
     return merged
@@ -81,8 +69,6 @@ def generate_eclipse_ass(
 
     primary = _hex_to_ass(s["primary_color"])
     highlight = _hex_to_ass(s["highlight_color"])
-    highlight_background = _hex_to_ass(s["highlight_background"], alpha=s["background_alpha"])
-    outline = _hex_to_ass(s["outline_color"])
 
     ass = f"""[Script Info]
 Title: Eclipse Auto Captions
@@ -95,8 +81,8 @@ YCbCr Matrix: TV.601
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{s['font_name']},{font_size},{primary},&H000000FF,{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{s['outline_width']},{s['shadow_depth']},2,42,42,{margin_bottom},1
-Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,{highlight_background},&H00000000,-1,0,0,0,100,100,0,0,1,5,0,2,42,42,{margin_bottom},1
+Style: Default,{s['font_name']},{font_size},{primary},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,42,42,{margin_bottom},1
+Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,42,42,{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -111,7 +97,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if text:
                 start = _seconds(segment.get("start", 0))
                 end = max(_seconds(segment.get("end", start + 1)), start + 0.05)
-                ass += _dialogue(start, end, text, fade=True)
+                ass += _dialogue(start, end, text)
             continue
 
         seg_start = _seconds(segment.get("start", words[0]["start"]))
@@ -131,11 +117,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 words,
                 index,
                 uppercase=s["uppercase"],
-                max_line_chars=s["max_line_chars"],
                 highlight=highlight,
-                highlight_background=highlight_background,
             )
-            ass += _dialogue(start, end, text, fade=False)
+            ass += _dialogue(start, end, text)
 
     return ass
 
@@ -185,9 +169,8 @@ def render_captioned_video(
             os.unlink(ass_path)
 
 
-def _dialogue(start: float, end: float, text: str, fade: bool) -> str:
-    override = r"{\fad(110,90)}" if fade else ""
-    return f"Dialogue: 0,{_seconds_to_ass_time(start)},{_seconds_to_ass_time(end)},Default,,0,0,0,,{override}{text}\n"
+def _dialogue(start: float, end: float, text: str) -> str:
+    return f"Dialogue: 0,{_seconds_to_ass_time(start)},{_seconds_to_ass_time(end)},Default,,0,0,0,,{text}\n"
 
 
 def _normalise_words(words: Any, segment: dict) -> list[dict]:
@@ -216,9 +199,7 @@ def _build_event_text(
     words: list[dict],
     active_index: int,
     uppercase: bool,
-    max_line_chars: int,
     highlight: str,
-    highlight_background: str,
 ) -> str:
     """Render a cue and insert the same readable line breaks for every word."""
     rendered_words: list[str] = []
@@ -228,14 +209,9 @@ def _build_event_text(
         if not value:
             continue
         if word_index == active_index:
-            # Let libass wrap at the actual video margins instead of inserting
-            # a character-count break that can still overflow narrow videos.
-            # The border provides the Eclipse word-shaped highlight.
-            value = (
-                "{\\c" + highlight + "\\3c" + highlight_background
-                + "\\bord5\\shad0\\fscx105}"
-                + value + "{\\r}"
-            )
+            # The reference uses a clean color change only: no border,
+            # shadow, glow, or translucent background.
+            value = "{\\c" + highlight + "}" + value + "{\\r}"
         rendered_words.append(value)
     return " ".join(rendered_words)
 
