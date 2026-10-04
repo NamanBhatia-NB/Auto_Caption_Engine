@@ -154,7 +154,13 @@ def start_render():
     requested_style = data.get("style")
     if isinstance(requested_style, dict):
         job["style"] = {**job.get("style", ECLIPSE_STYLE), **requested_style}
-    job.update({"status": "rendering", "progress": 55, "error": None})
+    job.update({
+        "status": "rendering",
+        "progress": 5,
+        "phase": "preparing caption render",
+        "error": None,
+        "warning": None,
+    })
 
     def worker():
         try:
@@ -162,15 +168,30 @@ def start_render():
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "captioned.mp4"
             info = job["video_info"]
-            render_captioned_video(
+            def update_render_progress(progress: int, phase: str):
+                job.update({"progress": progress, "phase": phase})
+
+            render_result = render_captioned_video(
                 video_path=job["video_path"],
                 segments=job["captions"]["segments"],
                 output_path=str(output_path),
                 video_width=info["width"],
                 video_height=info["height"],
                 style=job.get("style"),
+                matting_cache_path=str(output_dir / "person-mask.mkv"),
+                progress=update_render_progress,
             )
-            job.update({"output_path": str(output_path), "status": "rendered", "progress": 100, "error": None})
+            job.update({
+                "output_path": str(output_path),
+                "output_version": str(time.time_ns()),
+                "status": "rendered",
+                "progress": 100,
+                "phase": "complete",
+                "matting_applied": render_result.matting_applied,
+                "matting_cached": render_result.matting_cached,
+                "warning": render_result.warning,
+                "error": None,
+            })
         except Exception as error:
             job.update({"status": "error", "progress": 0, "error": str(error)})
 
@@ -191,6 +212,10 @@ def get_status(job_id: str):
         "video_info": job.get("video_info"),
         "filename": job.get("original_filename"),
         "error": job.get("error"),
+        "warning": job.get("warning"),
+        "matting_applied": job.get("matting_applied"),
+        "matting_cached": job.get("matting_cached"),
+        "output_version": job.get("output_version"),
         "has_captions": bool(job.get("captions")),
         "has_output": bool(job.get("output_path") and Path(job["output_path"]).exists()),
     }
@@ -296,6 +321,7 @@ def health():
         "ffmpeg": {"available": ffmpeg_ok, "version": version},
         "local_transcription": ffmpeg_ok,
         "transcription": "faster-whisper",
+        "behind_person_rendering": "rvm-mobilenetv3-onnx",
         "active_jobs": len(jobs),
     })
 

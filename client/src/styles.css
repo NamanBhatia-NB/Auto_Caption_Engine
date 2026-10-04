@@ -1,5 +1,13 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
 
+@font-face {
+  font-family: "Montserrat";
+  src: url("/fonts/Montserrat-Bold.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --ink: #0a0b0d;
   --panel: #111317;
@@ -355,35 +363,11 @@ h1 em {
 }
 .caption-overlay {
   position: absolute;
-  color: #fff;
-  font:
-    700 clamp(15px, 4.81cqw, 24px)/1.12 Arial,
-    sans-serif;
-  text-align: center;
+  pointer-events: none;
 }
-.caption-line {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  column-gap: 7px;
-  row-gap: 2px;
+.export-progress {
   width: 100%;
-  min-height: 1.12em;
-  overflow-wrap: anywhere;
-}
-.caption-word {
-  max-width: 100%;
-  padding: 4px 1px;
-}
-.caption-word.active {
-  display: inline-block;
-  color: #ffe000;
-  background: rgba(255, 212, 71, 0.2);
-  padding: 2px;
-  border-radius: 3px;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+  accent-color: var(--yellow);
 }
 .timecode {
   position: absolute;

@@ -2,42 +2,47 @@
 Eclipse caption renderer.
 
 The renderer mirrors the React caption overlay in client/src/styles.css:
-- Arial, bold
+- bundled Montserrat Bold (selected visual match, not claimed exact)
 - white normal words
 - #FFE000 active word
 - rgba(255, 212, 71, 0.20) active-word background
-- 7px inter-word gap
+- identical font-space advances in the browser and ASS
 - caption positioned at 15.6% from the bottom
 - 3.9% left/right margins
 """
 from __future__ import annotations
 
 import os
+import json
 import re
 import subprocess
 import tempfile
-from typing import Any  
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from matting import MattingUnavailable, ensure_person_mask
 
 
-# These values are the 1080x1920 equivalents of the React CSS.
-# React:
-#   font: 700 clamp(15px, 4.81cqw, 24px)/1.12 Arial
-#   bottom: 15.6%
-#   left/right: 3.9%
-#   column-gap: 7px
-#   active color: #FFE000
-#   active background: rgba(255, 212, 71, 0.2)
-ECLIPSE_STYLE: dict[str, Any] = {
-    "font_name": "Arial",
-    "font_size": 52,
-    "primary_color": "#FFFFFF",
-    "highlight_color": "#FFE000",
-    "highlight_background": "#FFD447",
-    "background_alpha": 20,
-    "margin_bottom": 300,
-    "max_words": 5,
-    "uppercase": False,
-}
+@dataclass(frozen=True)
+class RenderResult:
+    output_path: str
+    matting_applied: bool
+    matting_cached: bool
+    warning: str | None = None
+
+
+# One style source for CSS-em sizes, colors, and video-relative placement.
+STYLE_PATH = Path(__file__).resolve().parent.parent / "client/src/caption-style.json"
+ECLIPSE_STYLE: dict[str, Any] = json.loads(STYLE_PATH.read_text(encoding="utf-8"))
+
+# Metrics from the bundled Montserrat-Bold.ttf (1000 units per em).
+# libass sizes fonts by OS/2 Win ascent + descent, CSS sizes by unitsPerEm.
+# This conversion replaces the former guessed 1.15 multiplier.
+ASS_EM_RATIO = (1109 + 453) / 1000
+WIN_DESCENT_EM = 453 / 1000
+CSS_ASCENT_EM = 968 / 1000
+CSS_DESCENT_EM = 251 / 1000
 
 
 def merge_style(style: dict | None = None) -> dict[str, Any]:
@@ -47,7 +52,7 @@ def merge_style(style: dict | None = None) -> dict[str, Any]:
         merged.update({key: value for key, value in style.items() if value is not None})
 
     merged["font_name"] = _safe_font_name(merged["font_name"])
-    merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, 52)
+    merged["font_size"] = _clamp_int(merged.get("font_size"), 28, 120, ECLIPSE_STYLE["font_size"])
     merged["margin_bottom"] = _clamp_int(merged.get("margin_bottom"), 40, 700, 300)
     merged["max_words"] = _clamp_int(merged.get("max_words"), 2, 8, 5)
 
@@ -82,17 +87,24 @@ def generate_eclipse_ass(
     width = max(int(video_width or 1080), 1)
     height = max(int(video_height or 1920), 1)
 
-    # Exact React CSS:
-    #   font-size: clamp(15px, 4.81cqw, 24px)
-    # cqw = 1% of the caption container width.
-    font_size = max(round(width * 0.0481), 1)
+    css_size = width * s["font_size"] / ECLIPSE_STYLE["reference_width"]
+    font_size = round(css_size * ASS_EM_RATIO, 3)
 
     # React:
     #   bottom: 15.6%
     #   left: 3.9%
     #   right: 3.9%
-    margin_bottom = max(round(height * 0.156), 1)
-    margin_lr = max(round(width * 0.039), 1)
+    # Match the CSS baseline inside line-height:1.12, rather than moving the
+    # visible letters upward when ASS's larger Win line box is used.
+    css_baseline_from_bottom = css_size * (
+        ECLIPSE_STYLE["line_height"] - CSS_ASCENT_EM + CSS_DESCENT_EM
+    ) / 2
+    margin_bottom = max(round(
+        height * ECLIPSE_STYLE["bottom_ratio"]
+        + css_baseline_from_bottom - css_size * WIN_DESCENT_EM
+    ), 1)
+    margin_lr = max(round(width * ECLIPSE_STYLE["side_margin_ratio"]), 1)
+    box_padding = round(css_size * 0.065, 3)
 
     primary = _hex_to_ass(s["primary_color"])
     highlight = _hex_to_ass(s["highlight_color"])
@@ -113,14 +125,14 @@ Title: Eclipse Auto Captions
 ScriptType: v4.00+
 PlayResX: {width}
 PlayResY: {height}
-WrapStyle: 2
+WrapStyle: 1
 ScaledBorderAndShadow: yes
 YCbCr Matrix: TV.601
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{s['font_name']},{font_size},{primary},&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,2,{margin_lr},{margin_lr},{margin_bottom},1
-Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,{highlight_box},{highlight_box},1,0,0,0,100,100,0,0,3,2,0,2,{margin_lr},{margin_lr},{margin_bottom},1
+Style: Active,{s['font_name']},{font_size},{highlight},&H000000FF,{highlight_box},{highlight_box},1,0,0,0,100,100,0,0,3,{box_padding},0,2,{margin_lr},{margin_lr},{margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -178,8 +190,15 @@ def render_captioned_video(
     video_width: int = 1080,
     video_height: int = 1920,
     style: dict | None = None,
-) -> str:
-    """Burn the React-matched Eclipse captions into the video with FFmpeg."""
+    *,
+    matting_cache_path: str | None = None,
+    progress: Callable[[int, str], None] | None = None,
+) -> RenderResult:
+    """Render normal captions; optionally composite foreground with RVM.
+
+    If local RVM matting cannot run, the function deliberately falls back to
+    the existing normal ASS burn and returns the reason in ``warning``.
+    """
     ass_content = generate_eclipse_ass(
         segments,
         video_width,
@@ -188,7 +207,15 @@ def render_captioned_video(
     )
 
     ass_path = ""
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_directory = os.path.dirname(output_path)
+    os.makedirs(output_directory, exist_ok=True)
+    font_directory = (
+        Path(__file__).resolve().parent.parent / "client" / "public" / "fonts"
+    )
+    mask_path = matting_cache_path or str(Path(output_directory) / "person-mask.mkv")
+    matting_applied = False
+    matting_cached = False
+    warning = None
 
     with tempfile.NamedTemporaryFile(
         suffix=".ass",
@@ -201,34 +228,57 @@ def render_captioned_video(
         ass_path = subtitle_file.name
 
     try:
+        # Temporarily opt-in: normal captions stay fully visible by default.
+        if os.getenv("RVM_ENABLED", "false").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            try:
+                matte = ensure_person_mask(
+                    video_path,
+                    mask_path,
+                    progress=progress,
+                )
+                mask_path = matte.mask_path
+                matting_applied = True
+                matting_cached = matte.cached
+            except MattingUnavailable as error:
+                warning = (
+                    "Behind-person matting was unavailable; rendered normal captions instead. "
+                    + str(error)
+                )
+
+        if progress:
+            progress(82, "compositing captions behind foreground" if matting_applied else "rendering captions")
         subtitle_filter_path = _escape_filter_path(ass_path)
+        fonts_filter_path = _escape_filter_path(str(font_directory))
+        ass_filter = (
+            f"ass=filename='{subtitle_filter_path}':fontsdir='{fonts_filter_path}'"
+        )
+
+        if matting_applied:
+            filter_graph = (
+                "[0:v]setpts=PTS-STARTPTS,split=2[original][caption_base];"
+                f"[caption_base]{ass_filter}[captioned];"
+                "[1:v]setpts=PTS-STARTPTS,format=gray[matte];"
+                "[captioned][original][matte]maskedmerge,format=yuv420p[outv]"
+            )
+            video_inputs = ["-i", video_path, "-i", mask_path]
+            video_filter = ["-filter_complex", filter_graph, "-map", "[outv]"]
+        else:
+            video_inputs = ["-i", video_path]
+            video_filter = ["-vf", ass_filter, "-map", "0:v:0"]
 
         command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-y",
-            "-i",
-            video_path,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-vf",
-            f"ass=filename='{subtitle_filter_path}'",
-            "-c:v",
-            "libx264",
-            "-preset",
-            os.getenv("FFMPEG_PRESET", "medium"),
-            "-crf",
-            os.getenv("FFMPEG_CRF", "21"),
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
+            "ffmpeg", "-hide_banner", "-y",
+            *video_inputs,
+            *video_filter,
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", os.getenv("FFMPEG_PRESET", "medium"),
+            "-crf", os.getenv("FFMPEG_CRF", "21"),
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
             output_path,
         ]
 
@@ -236,7 +286,7 @@ def render_captioned_video(
             command,
             capture_output=True,
             text=True,
-            timeout=900,
+            timeout=int(os.getenv("RENDER_TIMEOUT_SECONDS", "1800")),
         )
 
         if result.returncode != 0:
@@ -244,7 +294,9 @@ def render_captioned_video(
                 f"FFmpeg rendering failed: {result.stderr[-1800:]}"
             )
 
-        return output_path
+        if progress:
+            progress(100, "complete")
+        return RenderResult(output_path, matting_applied, matting_cached, warning)
 
     finally:
         if ass_path and os.path.exists(ass_path):
@@ -300,18 +352,17 @@ def _build_event_text(
     Render one caption line using the React caption layout.
 
     React:
-      - Arial, bold
+      - bundled Montserrat Bold
       - normal text: #FFFFFF
       - active text: #FFE000
       - active box: #393117 (visual result of rgba(255,212,71,0.2)
         over the reference #08090B background)
-      - active padding: 2px
-      - column-gap: 7px
+      - proportional active-box padding (does not change text advances)
+      - normal font spaces, matching browser inline text
     """
     rendered_words: list[str] = []
 
-    # Two thin spaces closely reproduce the small 7px CSS column-gap.
-    gap = "\u2009\u2009"
+    gap = " "
 
     for word_index, word in enumerate(words):
         raw = _display_word(
@@ -379,12 +430,12 @@ def _hex_to_ass(value: str, alpha: int = 0) -> str:
 
 
 def _safe_font_name(value: Any) -> str:
-    value = str(value or "Arial").strip()
+    value = str(value or "Montserrat").strip()
 
     # Font names are inserted into an ASS header, so keep them single-line.
     value = re.sub(r"[^A-Za-z0-9 ._-]", "", value)
 
-    return value[:80] or "Arial"
+    return value[:80] or "Montserrat"
 
 
 def _clamp_int(

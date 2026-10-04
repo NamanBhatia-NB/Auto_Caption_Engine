@@ -1,0 +1,15 @@
+{
+  "font_name": "Montserrat",
+  "font_size": 78,
+  "reference_width": 1080,
+  "line_height": 1.12,
+  "bottom_ratio": 0.156,
+  "side_margin_ratio": 0.039,
+  "primary_color": "#FFFFFF",
+  "highlight_color": "#FFE000",
+  "highlight_background": "#FFD447",
+  "background_alpha": 20,
+  "margin_bottom": 300,
+  "max_words": 5,
+  "uppercase": false
+}

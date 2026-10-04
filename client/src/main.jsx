@@ -1,20 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import DEFAULT_STYLE from "./caption-style.json";
+import CaptionOverlay from "./CaptionOverlay";
+import { exportCaptionedVideo } from "./browser-export";
 import "./styles.css";
 
 const API = import.meta.env.VITE_API_URL || "";
 const ACCEPTED = ".mp4,.mov,.avi,.mkv,.webm,video/*";
-const DEFAULT_STYLE = {
-  font_name: "Arial",
-  font_size: 52,
-  primary_color: "#FFFFFF",
-  highlight_color: "#FFE000",
-  highlight_background: "#FFD447",
-  background_alpha: 20,
-  margin_bottom: 300,
-  max_words: 5,
-  uppercase: false,
-};
 
 async function request(path, options = {}) {
   const response = await fetch(`${API}${path}`, options);
@@ -35,24 +27,22 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [showRendered, setShowRendered] = useState(false);
   const [captionsDirty, setCaptionsDirty] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [download, setDownload] = useState(null);
+  const [exportProgress, setExportProgress] = useState(0);
+  const exportController = useRef(null);
   const videoRef = useRef(null);
   const stageRef = useRef(null);
   const animationFrameRef = useRef(null);
   const inputRef = useRef(null);
   const [videoContentBounds, setVideoContentBounds] = useState(null);
 
-  const busy = job && ["transcribing", "rendering"].includes(job.status);
+  const transcribing = job?.status === "transcribing";
+  const busy = transcribing || exporting;
   const hasVideo = Boolean(job?.job_id);
   const hasCaptions = Boolean(captions?.segments?.length);
-  const rendered = job?.status === "rendered" && job?.has_output;
-  const mediaSrc =
-    rendered && showRendered
-      ? `${API}/api/output/${job.job_id}`
-      : hasVideo
-        ? `${API}/api/preview/${job.job_id}`
-        : "";
+  const mediaSrc = hasVideo ? `${API}/api/preview/${job.job_id}` : "";
 
   const updateVideoContentBounds = useCallback(() => {
     const video = videoRef.current;
@@ -112,15 +102,12 @@ function App() {
         }
         if (next.status === "transcribed") {
           setMessage(
-            "Captions are ready. Review the transcript or render the Eclipse preview.",
+            "Captions are ready. Review the live overlay, then download the captioned video.",
           );
         } else if (next.status === "transcribing") {
           setMessage(
             `Whisper ${next.phase || "is transcribing"}… ${next.progress || 0}%`,
           );
-        } else if (next.status === "rendered") {
-          setMessage("Export is ready. Preview it here or download the MP4.");
-          setShowRendered(true);
         } else if (next.status === "error") {
           setError(next.error || "The job failed.");
         }
@@ -132,13 +119,22 @@ function App() {
   );
 
   useEffect(() => {
-    if (!job?.job_id || !busy) return undefined;
+    if (!job?.job_id || !transcribing) return undefined;
     const timer = window.setInterval(() => syncJob(job.job_id), 2500);
     return () => window.clearInterval(timer);
-  }, [busy, job?.job_id, syncJob]);
+  }, [transcribing, job?.job_id, syncJob]);
+
+  useEffect(() => () => {
+    if (download) URL.revokeObjectURL(download.url);
+  }, [download]);
+
+  useEffect(() => () => {
+    exportController.current?.abort();
+    window.cancelAnimationFrame(animationFrameRef.current);
+  }, []);
 
   function chooseFile(nextFile) {
-    if (!nextFile) return;
+    if (!nextFile || busy) return;
     if (
       !nextFile.type.startsWith("video/") &&
       !/\.(mp4|mov|avi|mkv|webm)$/i.test(nextFile.name)
@@ -186,7 +182,7 @@ function App() {
       setJob({ ...result, job_id: result.job_id });
       setCaptions(null);
       setCaptionsDirty(false);
-      setShowRendered(false);
+      setDownload(null);
       setCurrentTime(0);
       setMessage("Upload complete. Whisper is ready to generate captions.");
     } catch (requestError) {
@@ -198,6 +194,9 @@ function App() {
   async function transcribe() {
     if (!job?.job_id) return;
     setError("");
+    setDownload(null);
+    setCaptions(null);
+    setCaptionsDirty(false);
     setMessage(
       "Starting Faster-Whisper. The first run downloads the local model once…",
     );
@@ -230,37 +229,62 @@ function App() {
       });
       setCaptions(result.captions);
       setCaptionsDirty(false);
-      setShowRendered(false);
+      setDownload(null);
       setJob((previous) => ({
         ...previous,
         status: "transcribed",
         has_output: false,
       }));
-      setMessage("Transcript edits saved. Render again to update the video.");
+      setMessage("Transcript edits saved. Download again to include them in the video.");
     } catch (requestError) {
       setError(requestError.message);
     }
   }
 
-  async function renderVideo() {
-    if (!job?.job_id || !hasCaptions) return;
+  async function downloadCaptionedVideo() {
+    if (!job?.job_id || !hasCaptions || captionsDirty || busy || exportController.current) return;
     setError("");
-    setMessage("Rendering the Eclipse overlay with FFmpeg…");
-    setShowRendered(false);
-    setJob((previous) => ({ ...previous, status: "rendering" }));
+    setDownload(null);
+    setExporting(true);
+    setExportProgress(0);
+    setMessage("Recording the live captions and audio in your browser. Keep this tab visible…");
+    videoRef.current?.pause();
+    const controller = new AbortController();
+    exportController.current = controller;
     try {
-      await request("/api/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id, style }),
+      const result = await exportCaptionedVideo({
+        src: mediaSrc,
+        segments: captions.segments,
+        style,
+        fps: job.video_info?.fps,
+        signal: controller.signal,
+        onProgress: setExportProgress,
       });
-    } catch (requestError) {
-      setError(requestError.message);
-      await syncJob(job.job_id);
+      const url = URL.createObjectURL(result.blob);
+      const stem = (job.filename || "video").replace(/\.[^.]+$/, "");
+      const name = `${stem}_captioned.${result.extension}`;
+      setDownload({ url, name, extension: result.extension });
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setMessage(`Your captioned ${result.extension.toUpperCase()} is ready. The download includes captions and audio.`);
+    } catch (exportError) {
+      if (exportError.name === "AbortError") setMessage("Export cancelled. Your live preview is ready.");
+      else {
+        setError(exportError.message);
+        setMessage("Browser export could not finish. Please retry.");
+      }
+    } finally {
+      exportController.current = null;
+      setExporting(false);
     }
   }
 
   function updateSegment(index, value) {
+    setDownload(null);
     setCaptions((previous) => ({
       ...previous,
       segments: previous.segments.map((segment, segmentIndex) =>
@@ -271,16 +295,17 @@ function App() {
   }
 
   function reset() {
+    if (busy) return;
     setFile(null);
     setJob(null);
     setCaptions(null);
     setError("");
     setMessage("Drop a video to begin.");
-    setShowRendered(false);
+    setDownload(null);
     setCaptionsDirty(false);
   }
 
-  const step = !hasVideo ? 1 : !hasCaptions ? 2 : !rendered ? 3 : 4;
+  const step = !hasVideo ? 1 : !hasCaptions ? 2 : !download ? 3 : 4;
 
   return (
     <div className="app-shell">
@@ -297,7 +322,7 @@ function App() {
         <div className="header-note">
           <span className="status-dot" /> 100% local workflow · no paid tools
         </div>
-        <button className="ghost-button" onClick={reset}>
+        <button className="ghost-button" onClick={reset} disabled={busy}>
           New project <span>⌘ N</span>
         </button>
       </header>
@@ -319,7 +344,7 @@ function App() {
         </section>
 
         <nav className="stepper" aria-label="Project progress">
-          {["Upload", "Transcribe", "Style & edit", "Export"].map(
+          {["Upload", "Transcribe", "Review & edit", "Download"].map(
             (label, index) => (
               <div
                 className={`step ${step === index + 1 ? "current" : ""} ${step > index + 1 ? "complete" : ""}`}
@@ -347,9 +372,7 @@ function App() {
                 <div>
                   <span className="panel-kicker">LIVE CANVAS</span>
                   <h2>
-                    {showRendered && rendered
-                      ? "Rendered output"
-                      : "Caption preview"}
+                    Live caption preview
                   </h2>
                 </div>
                 <div className="canvas-meta">
@@ -368,7 +391,8 @@ function App() {
                       ref={videoRef}
                       key={mediaSrc}
                       src={mediaSrc}
-                      controls
+                      crossOrigin="anonymous"
+                      controls={!exporting}
                       playsInline
                       onTimeUpdate={(event) =>
                         setCurrentTime(event.currentTarget.currentTime)
@@ -405,15 +429,12 @@ function App() {
                         setCurrentTime(event.currentTarget.currentTime)
                       }
                     />
-                    {!showRendered && (
-                      <CaptionOverlay
+                    <CaptionOverlay
                         segment={activeSegment}
                         currentTime={currentTime}
-                        uppercase={style.uppercase}
+                        style={style}
                         videoContentBounds={videoContentBounds}
-                        stageHeight={stageRef.current?.clientHeight || 0}
-                      />
-                    )}
+                    />
                     <div className="timecode">
                       {formatTime(currentTime)} /{" "}
                       {formatTime(duration || job?.video_info?.duration || 0)}
@@ -426,22 +447,9 @@ function App() {
                   </div>
                 )}
               </div>
-              {rendered && (
-                <div className="preview-switch">
-                  <button
-                    className={!showRendered ? "selected" : ""}
-                    onClick={() => setShowRendered(false)}
-                  >
-                    Live overlay
-                  </button>
-                  <button
-                    className={showRendered ? "selected" : ""}
-                    onClick={() => setShowRendered(true)}
-                  >
-                    Rendered file
-                  </button>
-                </div>
-              )}
+              <p className="microcopy preview-note">
+                Download records this caption overlay and the original audio directly in your browser. Keep this tab visible; export takes about the length of the clip.
+              </p>
             </div>
 
             <div className="panel transcript-panel">
@@ -456,7 +464,7 @@ function App() {
                   </h2>
                 </div>
                 {captionsDirty && (
-                  <button className="small-button" onClick={saveCaptionEdits}>
+                  <button className="small-button" onClick={saveCaptionEdits} disabled={busy}>
                     Save edits
                   </button>
                 )}
@@ -484,13 +492,14 @@ function App() {
                       className={`transcript-row ${activeSegment === segment ? "active" : ""}`}
                       key={`${segment.start}-${index}`}
                       onClick={() => {
-                        if (videoRef.current)
+                        if (videoRef.current && !busy)
                           videoRef.current.currentTime = segment.start;
                       }}
                     >
                       <time>{formatTime(segment.start)}</time>
                       <input
                         aria-label={`Caption ${index + 1}`}
+                        disabled={busy}
                         value={segment.text}
                         onChange={(event) =>
                           updateSegment(index, event.target.value)
@@ -576,6 +585,7 @@ function App() {
               </label>
               <select
                 id="language"
+                disabled={busy}
                 value={language}
                 onChange={(event) => setLanguage(event.target.value)}
               >
@@ -607,29 +617,32 @@ function App() {
             <button
               className="export-button"
               disabled={!hasCaptions || busy || captionsDirty}
-              onClick={renderVideo}
+              onClick={downloadCaptionedVideo}
             >
               <span className="export-icon">↓</span>
               <span>
                 <b>
-                  {busy && job.status === "rendering"
-                    ? "Rendering video…"
-                    : "Render & export"}
+                  {exporting ? `Recording… ${exportProgress}%` : "Download captioned video"}
                 </b>
                 <small>
                   {captionsDirty
                     ? "Save transcript edits first"
-                    : "Burn Eclipse captions into MP4"}
+                    : "Browser export · live captions + audio"}
                 </small>
               </span>
               <strong>→</strong>
             </button>
-            {rendered && (
+            {exporting && <>
+              <progress className="export-progress" value={exportProgress} max="100" aria-label="Video export progress" />
+              <button className="small-button" onClick={() => exportController.current?.abort()}>Cancel export</button>
+            </>}
+            {download && (
               <a
                 className="download-button"
-                href={`${API}/api/download/${job.job_id}`}
+                href={download.url}
+                download={download.name}
               >
-                <span>↓</span> Download final MP4
+                <span>↓</span> Download again ({download.extension.toUpperCase()})
               </a>
             )}
           </aside>
@@ -643,64 +656,6 @@ function App() {
         <span>Built with FFmpeg · Whisper · React</span>
         <span>Local-first by design</span>
       </footer>
-    </div>
-  );
-}
-
-function CaptionOverlay({
-  segment,
-  currentTime,
-  uppercase,
-  videoContentBounds,
-  stageHeight,
-}) {
-  if (!segment || !videoContentBounds) return null;
-
-  const {
-    left,
-    top,
-    width,
-    height,
-  } = videoContentBounds;
-
-  const captionBottom =
-    stageHeight - top - height + height * 0.156;
-
-  return (
-    <div
-      className="caption-overlay"
-      style={{
-        left: `${left}px`,
-        width: `${width}px`,
-        right: 'auto',
-        maxWidth: `${width}px`,
-        bottom: `${captionBottom}px`,
-      }}
-    >
-      <div className="caption-line">
-        {(segment.words || []).map((word, index) => {
-          const value = uppercase
-            ? word.word.toUpperCase()
-            : word.word;
-
-          const active =
-            currentTime >= word.start &&
-            currentTime < word.end;
-
-          return (
-            <span
-              className={
-                active
-                  ? 'caption-word active'
-                  : 'caption-word'
-              }
-              key={`${word.start}-${index}`}
-            >
-              {value}
-            </span>
-          );
-        })}
-      </div>
     </div>
   );
 }
